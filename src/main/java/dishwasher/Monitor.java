@@ -14,8 +14,6 @@ import org.jfree.chart.axis.ValueAxis;
 import org.jfree.chart.plot.PlotOrientation;
 import org.jfree.chart.plot.ValueMarker;
 import org.jfree.chart.plot.XYPlot;
-import org.jfree.chart.renderer.xy.DefaultXYItemRenderer;
-import org.jfree.chart.renderer.xy.XYItemRenderer;
 import org.jfree.chart.renderer.xy.XYLineAndShapeRenderer;
 import org.jfree.data.xy.XYSeries;
 import org.jfree.data.xy.XYSeriesCollection;
@@ -26,7 +24,6 @@ import javax.swing.*;
 import java.awt.*;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
-import java.awt.event.WindowEvent;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.PipedInputStream;
@@ -42,12 +39,11 @@ import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.Date;
 import java.util.Locale;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 public class Monitor extends ApplicationFrame {
 
-    private static final float USDA_FISH = 62.8F;
+    private static final float TEMP_SAFE = 62.8F;
 
     private static final String TITLE = "Dishwasher Salmon Monitor";
     private static final String START = "Start";
@@ -55,30 +51,49 @@ public class Monitor extends ApplicationFrame {
 
     private static final float TEMP_MIN = 0;
     private static final float TEMP_MAX = 100;
-    public static final int TEMP_SAFE = 63;
 
     private static final int SECOND = 1;
     private static final int MINUTE = 60 * SECOND;
 
     private volatile boolean keepUpdating = true;
+    private volatile boolean keepRunning = true;
 
-    private AtomicBoolean keepRunning = new AtomicBoolean(true);
     private AtomicReference<Thread> serialThread = new AtomicReference<>();
-    private String csv;
+    private String csvFilePath;
 
     private XYSeriesCollection dataset;
     private XYSeries dataSeries;
     private NumberAxis domainAxis;
-    private InputStream testInputStream;
+    private SerialPort serialPort;
 
+    // Port errors can sometimes be solved by plugging into a different USB port
+    public static void main(final String[] args) {
+        EventQueue.invokeLater(() -> {
+            Monitor monitor = new Monitor(TITLE);
+            monitor.pack();
+            RefineryUtilities.centerFrameOnScreen(monitor);
+
+            monitor.setVisible(true);
+
+            if (System.getProperty("test", null) != null) {
+                monitor.connectTest();
+            } else {
+                monitor.connect("/dev/cu.usbmodemFA141");
+            }
+
+            Runtime.getRuntime().addShutdownHook(new Thread() {
+
+                @Override
+                public void run() {
+                    monitor.close();
+                }
+            });
+        });
+    }
 
     public Monitor(final String title) {
         super(title);
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
-
-        if (System.getProperty("test", null) != null) {
-            initTest();
-        }
 
         JFreeChart chart = createChart();
 
@@ -89,12 +104,11 @@ public class Monitor extends ApplicationFrame {
             public void actionPerformed(ActionEvent e) {
                 String cmd = e.getActionCommand();
                 if (STOP.equals(cmd)) {
-                    keepRunning.set(false);
                     keepUpdating = false;
                     run.setText(START);
+
                 } else {
-                    keepRunning.set(true);
-                    keepUpdating = false;
+                    keepUpdating = true;
                     run.setText(STOP);
                 }
             }
@@ -134,83 +148,17 @@ public class Monitor extends ApplicationFrame {
 
         // Set up CSV output
         final Instant now = Instant.now();
-        final DateTimeFormatter formatter = DateTimeFormatter
-                .ofPattern("yyyy_MM_dd_HH_mm_ss")
-                .withLocale(Locale.US)
-                .withZone(ZoneId.systemDefault());
-        csv = System.getProperty("user.home") + "/Documents/dishwasher_" + formatter.format(now)
-            + ".csv";
+        final DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy_MM_dd_HH_mm_ss").withLocale(Locale.US).withZone(ZoneId.systemDefault());
+        csvFilePath = System.getProperty("user.home") + "/Documents/dishwasher_"
+            + formatter.format(now) + ".csvFilePath";
         try {
-            Files.write(Paths.get(csv), "Time,Temperature °C\n".getBytes(), StandardOpenOption.CREATE_NEW);
-            System.out.println("Logging to " + csv);
+            Files.write(Paths.get(csvFilePath), "Time,Temperature °C\n".getBytes(), StandardOpenOption.CREATE_NEW);
+            System.out.println("Logging to " + csvFilePath);
         } catch (IOException e) {
             throw new RuntimeException(e);
         }
-
-        //        // Set up the timer for the live chart
-        //        timer = new Timer(SECOND, new ActionListener() {
-        //
-        //            long now;
-        //            float value;
-        //            float[] data = new float[1];
-        //
-        //            @Override
-        //            public void actionPerformed(ActionEvent e) {
-        //                value = Float.intBitsToFloat(probe.get());
-        //                now = System.currentTimeMillis();
-        //                if (count < BUFFER) {
-        //                    dataset.addValue(0, count, value);
-        //                } else {
-        //                    data[0] = value;
-        //                    dataset.advanceTime();
-        //                    dataset.appendData(data);
-        //                }
-        //                count++;
-        //            }
-        //        });
     }
 
-    private void initTest() {
-        try {
-
-            testInputStream = new PipedInputStream();
-            PipedOutputStream out = new PipedOutputStream((PipedInputStream) testInputStream);
-
-
-            Thread thread = new Thread(new Runnable() {
-                @Override
-                public void run() {
-                    while (true) {
-
-                        try {
-                            if (keepUpdating) {
-                                Date date = new Date();
-                                out.write(("" + (date.getTime() % 70000 / 1000 + 15)).getBytes());
-                                out.write("\r\n".getBytes());
-                                out.flush();
-                            }
-                            Thread.sleep(900);
-                        } catch (Exception e) {
-                            e.printStackTrace();
-                            try {
-                                out.close();
-                            } catch (IOException e1) {
-                                e1.printStackTrace();
-                            }
-                            return;
-                        }
-                    }
-                }
-            });
-            thread.setName("TestGenerator");
-            thread.start();
-
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-
-
-    }
 
     private JFreeChart createChart() {
         dataSeries = new XYSeries("probe");
@@ -235,13 +183,59 @@ public class Monitor extends ApplicationFrame {
         return toReturn;
     }
 
-    private void connect(final String portName) {
-        if (testInputStream != null) {
-            serialThread.set(new Thread(new SerialReader(csv, null, testInputStream, keepRunning, this)));
-            serialThread.get().setName("serialThread");
-            serialThread.get().start();
-            return;
+    private void connectTest() {
+
+        serialThread.set(new Thread(new InputStreamLoop(csvFilePath, startTestGeneration())));
+        serialThread.get().setName("serialThread");
+        serialThread.get().start();
+
+    }
+
+    private PipedInputStream startTestGeneration() {
+        PipedInputStream pipedInputStream = new PipedInputStream();
+        try {
+            PipedOutputStream out = new PipedOutputStream(pipedInputStream);
+
+
+            Thread thread = new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        while (true) {
+                            Date date = new Date();
+                            out.write(("" + (date.getTime() % 70000 / 1000 + 15)).getBytes());
+                            out.write("\r\n".getBytes());
+                            out.flush();
+
+                            Thread.sleep(911);
+                            if (!serialThread.get().isAlive()) {
+                                return;
+                            }
+                        }
+                    } catch (Exception e) {
+                        e.printStackTrace();
+
+                    } finally {
+                        try {
+                            System.out.println("Stopping test data generation");
+                            out.close();
+                        } catch (IOException e) {
+                            e.printStackTrace();
+                        }
+                    }
+                }
+            });
+            thread.setName("TestGenerator");
+            thread.start();
+
+        } catch (Exception e) {
+            e.printStackTrace();
         }
+
+        return pipedInputStream;
+    }
+
+    private void connect(final String portName) {
 
         try {
             CommPortIdentifier portIdentifier = CommPortIdentifier.getPortIdentifier(portName);
@@ -250,14 +244,15 @@ public class Monitor extends ApplicationFrame {
             } else {
                 CommPort port = portIdentifier.open(TITLE, 2000);
                 if (port instanceof SerialPort) {
-                    SerialPort serialPort = (SerialPort) port;
+                    serialPort = (SerialPort) port;
                     serialPort.setSerialPortParams(9600, SerialPort.DATABITS_8, SerialPort.STOPBITS_1, SerialPort.PARITY_NONE);
                     InputStream in = serialPort.getInputStream();
-                    serialThread.set(new Thread(new SerialReader(csv, port, in, keepRunning, this)));
+                    serialThread.set(new Thread(new InputStreamLoop(csvFilePath, in)));
                     serialThread.get().setName("serialThread");
                     serialThread.get().start();
                 } else {
                     System.out.println("Error: Only serial ports are handled by this example.");
+                    port.close();
                 }
             }
         } catch (final PortInUseException | NoSuchPortException | IOException | UnsupportedCommOperationException e) {
@@ -265,27 +260,19 @@ public class Monitor extends ApplicationFrame {
         }
     }
 
-    public static class SerialReader implements Runnable {
+    class InputStreamLoop implements Runnable {
 
         private String csv;
-        private CommPort port;
         private InputStream in;
-        private AtomicBoolean keepRunning;
+
         private DateTimeFormatter formatter;
+
         private boolean heads = true;
 
-        private final Monitor monitor;
-
-        public SerialReader(final String csv, final CommPort port, final InputStream in, final AtomicBoolean keepRunning, Monitor monitor) {
+        InputStreamLoop(final String csv, final InputStream in) {
             this.csv = csv;
-            this.port = port;
             this.in = in;
-            this.keepRunning = keepRunning;
-            this.monitor = monitor;
-            this.formatter = DateTimeFormatter
-                    .ofPattern("HH:mm:ss")
-                    .withLocale(Locale.US)
-                    .withZone(ZoneId.systemDefault());
+            this.formatter = DateTimeFormatter.ofPattern("HH:mm:ss").withLocale(Locale.US).withZone(ZoneId.systemDefault());
         }
 
         public void run() {
@@ -293,11 +280,12 @@ public class Monitor extends ApplicationFrame {
             int len;
             final StringBuilder segments = new StringBuilder();
             try {
-                while (((len = this.in.read(buffer)) > -1) && (keepRunning.get())) {
+                while ((len = this.in.read(buffer)) > -1 && keepRunning) {
                     final String segment = new String(buffer, 0, len);
                     segments.append(segment);
                     int delimiter = segments.lastIndexOf("\r\n");
-                    if (delimiter == -1) continue;
+                    if (delimiter == -1)
+                        continue;
                     if (heads) {
                         segments.setLength(0); // clear out incomplete readings
                         heads = false;
@@ -305,79 +293,74 @@ public class Monitor extends ApplicationFrame {
                     }
                     for (String l : segments.substring(0, delimiter).split("\r\n")) {
                         float value = Float.valueOf(l);
-                        System.out.println((value < USDA_FISH ? "⚠" : "✓") + " " + value);
                         Instant now = Instant.now();
-                        final String timestamp = formatter.format(now);
-                        final String line = timestamp + "," + Float.toString(value) + "\n";
-                        Files.write(Paths.get(csv), line.getBytes(), StandardOpenOption.APPEND);
 
-
-                        if (monitor.keepUpdating) {
-                            long epochSecond = now.getEpochSecond();
-
-                            SwingUtilities.invokeLater(new Runnable() {
-                                @Override
-                                public void run() {
-                                    monitor.dataSeries.add(epochSecond, value);
-                                }
-                            });
-                        }
+                        saveIntoFile(value, now);
+                        addToChart(value, now);
                     }
                     segments.delete(0, delimiter + 2);
                 }
-                port.close();
-                System.out.println("Closed serial port.");
+
             } catch (final IOException e) {
                 throw new RuntimeException(e);
             }
+
+            System.out.println("InputStreamLoop finished");
+        }
+
+        private void addToChart(final float value, Instant now) {
+            if (keepUpdating) {
+                long epochSecond = now.toEpochMilli();
+
+                SwingUtilities.invokeLater(new Runnable() {
+                    @Override
+                    public void run() {
+                        dataSeries.add(epochSecond, value);
+                    }
+                });
+            }
+        }
+
+        private void saveIntoFile(float value, Instant now) throws IOException {
+            System.out.println((value < TEMP_SAFE ? "⚠" : "✓") + " " + value);
+            final String timestamp = formatter.format(now);
+            final String line = timestamp + "," + Float.toString(value) + "\n";
+            Files.write(Paths.get(csv), line.getBytes(), StandardOpenOption.APPEND);
         }
     }
 
-    @Override
-    public void windowClosing(WindowEvent event) {
+    private void close() {
+        System.out.println("Closing resoucres");
+
+        keepRunning = false;
+
         try {
-            keepUpdating = false;
-            keepRunning.set(false);
+            Thread serialThread = this.serialThread.get();
 
-            if (testInputStream != null) {
-                testInputStream.close();
+
+            serialThread.join(2000);
+
+            if (serialThread.isAlive()) {
+                //if thread parked and waiting for input that might never come
+                serialThread.interrupt();
+                //no sense to wait longer than 30 sec
+                serialThread.join(30000);
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+
+        try {
+            if (serialPort != null) {
+                serialPort.close();
+                System.out.println("Serial port closed");
             }
 
-            serialThread.get().interrupt();
-            try {
-                serialThread.get().join();
-            } catch (InterruptedException e) {
-                e.printStackTrace();
-            }
-        } catch (Exception e) {}
-
-        super.windowClosing(event);
-
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
     }
 
-    // Port errors can sometimes be solved by plugging into a different USB port
-    public static void main(final String[] args) {
-        EventQueue.invokeLater(() -> {
-            Monitor demo = new Monitor(TITLE);
-            demo.pack();
-            RefineryUtilities.centerFrameOnScreen(demo);
-            demo.setVisible(true);
-            demo.connect("/dev/cu.usbmodemFA141");
-            final Thread mainThread = Thread.currentThread();
-            Runtime.getRuntime().addShutdownHook(new Thread() {
-
-                @Override
-                public void run() {
-                    demo.keepRunning.set(false);
-                    try {
-                        mainThread.join();
-                    } catch (final InterruptedException e) {
-                        throw new RuntimeException(e);
-                    }
-                }
-            });
-        });
-    }
 
     private static class TimeSeriesFormatter extends NumberFormat {
         @Override
@@ -386,15 +369,21 @@ public class Monitor extends ApplicationFrame {
                 toAppendTo = new StringBuffer();
             }
 
-            number %= (3600 * 24);
+            number %= (3600 * 24 * 1000);
 
-            int hours = (int) number / 3600;
-            int minutes = (int) (number % 3600) / 60;
-            int secs = (int) number % 60;
+            int hours = (int) number / 3600000;
+            int minutes = (int) (number % 3600000) / 60000;
+            int secs = (int) (number % 60000) / 1000;
+            int millies = (int) number % 1000;
 
             toAppendTo.append(hours < 10 ? "0" : "").append(hours).append(":").append(
                 minutes < 10 ? "0" : "").append(minutes).append(":").append(
                 secs < 10 ? "0" : "").append(secs);
+
+            if (millies != 0) {
+                String paddedMillies = ("" + (1000 + millies)).substring(1);
+                toAppendTo.append(".").append(paddedMillies);
+            }
 
             return toAppendTo;
         }
@@ -420,8 +409,8 @@ public class Monitor extends ApplicationFrame {
         @Override
         public Paint getItemPaint(int row, int col) {
 
-                double value = getPlot().getDataset(0).getYValue(row, col);
-                return value >= TEMP_SAFE ? Color.GREEN : Color.RED;
+            double value = getPlot().getDataset(0).getYValue(row, col);
+            return value >= TEMP_SAFE ? Color.GREEN : Color.RED;
 
         }
 
