@@ -150,7 +150,7 @@ public class Monitor extends ApplicationFrame {
         final Instant now = Instant.now();
         final DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy_MM_dd_HH_mm_ss").withLocale(Locale.US).withZone(ZoneId.systemDefault());
         csvFilePath = System.getProperty("user.home") + "/Documents/dishwasher_"
-            + formatter.format(now) + ".csvFilePath";
+            + formatter.format(now) + ".csv";
         try {
             Files.write(Paths.get(csvFilePath), "Time,Temperature °C\n".getBytes(), StandardOpenOption.CREATE_NEW);
             System.out.println("Logging to " + csvFilePath);
